@@ -79,8 +79,13 @@ void async_receive(int world_size, int rank, std::vector<MPI_Request>& recv_requ
         // int recv_stream_idx = 0;
         // int send_stream_idx = elem_to_stream_mapping[src];
         // int recv_stream_idx = elem_to_stream_mapping[dst];
-        int send_stream_idx = elem_pair_to_stream_idx[{src, dst}];
+
+        int send_stream_idx = elem_pair_to_stream_idx.at({src, dst});
         int recv_stream_idx = send_stream_idx;
+
+	std::stringstream s1;
+	s1 << "recv: " << src << " " << dst << " " << send_stream_idx << std::endl;
+	std::cout << s1.str();
 	
 	int mpi_tag = get_mpi_tag(dst, src);
 	if (USE_STREAMS) {
@@ -147,8 +152,12 @@ void main_loop(int world_size, int rank, std::vector<int>* elements_at_level,
                 // int send_stream_idx = elem_to_stream_mapping[elem];
                 // int recv_stream_idx = elem_to_stream_mapping[neigh];
 
-                int send_stream_idx = elem_pair_to_stream_idx[{elem, neigh}];
+                int send_stream_idx = elem_pair_to_stream_idx.at({elem, neigh});
                 int recv_stream_idx = send_stream_idx;
+
+		std::stringstream s1;
+	        s1 << "send: " << elem << " " << neigh << " " << send_stream_idx << std::endl;
+		std::cout << s1.str();
 
 		send_requests[elem].emplace_back();
 
