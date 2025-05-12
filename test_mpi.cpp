@@ -7,6 +7,7 @@
 #include <cassert>
 #include <utility>
 #include <map>
+#include <cilk/cilk.h>
 
 constexpr static int NUM_ELEMENTS = 512;
 constexpr static int NUM_LEVELS = 4;
@@ -70,8 +71,9 @@ int get_mpi_tag(int dst, int src) {
     return (dst << 14) | src;
 }
 
-void async_receive(int world_size, int rank, std::vector<MPI_Request>& recv_requests, std::map<std::pair<int, int>, int> elem_pair_to_recv_idx, const std::vector<int>& elem_to_stream_mapping) {
+void async_receive(int world_size, int rank, int level, std::vector<MPI_Request>& recv_requests, std::map<std::pair<int, int>, int> elem_pair_to_recv_idx, const std::vector<int>& elem_to_stream_mapping) {
     recv_requests.resize(elem_pair_to_recv_idx.size());
+
     for (auto& [elem_pair, recv_idx] : elem_pair_to_recv_idx) {
 	int src = elem_pair.first;
 	int dst = elem_pair.second;
@@ -83,9 +85,11 @@ void async_receive(int world_size, int rank, std::vector<MPI_Request>& recv_requ
         int send_stream_idx = elem_pair_to_stream_idx.at({src, dst});
         int recv_stream_idx = send_stream_idx;
 
+	if (rank == 0) {
 	std::stringstream s1;
-	s1 << "recv: " << src << " " << dst << " " << send_stream_idx << std::endl;
+	s1 << "level: " << level << " rank: " << rank << " recv: " << src << " " << dst << " " << send_stream_idx << std::endl;
 	std::cout << s1.str();
+	}
 	
 	int mpi_tag = get_mpi_tag(dst, src);
 	if (USE_STREAMS) {
@@ -115,12 +119,14 @@ void main_loop(int world_size, int rank, std::vector<int>* elements_at_level,
     for (int level = 0; level < NUM_LEVELS; level++) {
 	// Call async receives for elements in level + 1
 	if (level < NUM_LEVELS - 1) {
-	    async_receive(world_size, rank, recv_requests[level + 1], elem_pair_to_recv_idx[level + 1], elem_to_stream_mapping);
+	    cilk_spawn async_receive(world_size, rank, level + 1, recv_requests[level + 1], elem_pair_to_recv_idx[level + 1], elem_to_stream_mapping);
 	}
 
+	if (level > 0) {
 	std::stringstream s1;
 	s1 << "rank: " << rank << " level: " << level << " start wait." << std::endl;
 	std::cout << s1.str();
+	}
 
 	int num_wait = 0;
 	while (num_wait < elem_pair_to_recv_idx[level].size()) {
@@ -129,9 +135,11 @@ void main_loop(int world_size, int rank, std::vector<int>* elements_at_level,
 	    num_wait++;
 	}
 
+	if (level > 0) {
 	std::stringstream s2;
 	s2 << "rank: " << rank << " level: " << level << " end wait." << std::endl;
 	std::cout << s2.str();
+	}
 
 	for (int j = 0; j < elements_at_level[level].size(); j++) {
 	    int elem = elements_at_level[level][j];
@@ -155,10 +163,6 @@ void main_loop(int world_size, int rank, std::vector<int>* elements_at_level,
                 int send_stream_idx = elem_pair_to_stream_idx.at({elem, neigh});
                 int recv_stream_idx = send_stream_idx;
 
-		std::stringstream s1;
-	        s1 << "send: " << elem << " " << neigh << " " << send_stream_idx << std::endl;
-		std::cout << s1.str();
-
 		send_requests[elem].emplace_back();
 
 		if (USE_STREAMS) {
@@ -172,18 +176,19 @@ void main_loop(int world_size, int rank, std::vector<int>* elements_at_level,
 			      MPI_COMM_WORLD, &send_requests[elem][send_requests[elem].size() - 1]);
 		}
 	    }
+
+	    cilk_spawn MPI_Waitall(send_requests[elem].size(), send_requests[elem].data(), MPI_STATUSES_IGNORE);
 	}
     }
 
     for (int level = 0; level < NUM_LEVELS; level++) {
-	for (int j = 0; j < elements_at_level[level].size(); j++) {
-	    int elem = elements_at_level[level][j];
-	    if (elem % world_size != rank) {
-		continue;
-	    }
+        for (int j = 0; j < elements_at_level[level].size(); j++) {
+            int elem = elements_at_level[level][j];
+            if (elem % world_size != rank) {
+                continue;
+            }
 
-	    MPI_Waitall(send_requests[elem].size(), send_requests[elem].data(), MPI_STATUSES_IGNORE);
-	}
+        }
     }
 }
 
@@ -261,7 +266,6 @@ int main(int argc, char **argv) {
     }
 
     stream_idx = 0;
-    int total = 0;
 
     for (int level = 0; level < NUM_LEVELS; level++) {
         for (int j = 0; j < elements_at_level[level].size(); j++) {
@@ -278,12 +282,9 @@ int main(int argc, char **argv) {
 	        elem_pair_to_stream_idx[{elem, neigh}] = stream_idx;
 		assert(stream_idx < NUM_STREAMS);
 	        stream_idx = (stream_idx + 1);
-		total++;
 	    }
 	}
     }
-
-    std::cout << "total: " << total << std::endl;
 
     std::vector<int> my_src;
     std::vector<int> my_dst;
